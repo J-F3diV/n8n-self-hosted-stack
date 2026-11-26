@@ -32,11 +32,15 @@ step "Monitor: healthy stack"
 ./scripts/check-stuck-executions.sh 1 || fail "monitor reported problems on a fresh stack"
 
 step "Monitor: detects a stuck execution"
-# Synthetic row; FK triggers are bypassed so no workflow has to exist.
+# Import a real (empty, inactive) workflow via the n8n CLI so foreign keys hold,
+# then add a synthetic execution that has been "running" for 3 hours.
+docker compose exec -T n8n sh -c 'cat > /tmp/smoke-workflow.json' <<'JSON'
+[{"id":"smoketest0000001","name":"smoke-test","active":false,"nodes":[],"connections":{},"settings":{}}]
+JSON
+docker compose exec -T n8n n8n import:workflow --input=/tmp/smoke-workflow.json
 docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<'SQL'
-SET session_replication_role = replica;
 INSERT INTO execution_entity (finished, mode, status, "createdAt", "startedAt", "workflowId")
-VALUES (false, 'trigger', 'running', now() - interval '3 hours', now() - interval '3 hours', 'smoke-test');
+VALUES (false, 'trigger', 'running', now() - interval '3 hours', now() - interval '3 hours', 'smoketest0000001');
 SQL
 set +e
 out="$(./scripts/check-stuck-executions.sh 60)"
@@ -44,7 +48,7 @@ rc=$?
 set -e
 echo "$out"
 [[ $rc -eq 2 ]] || fail "monitor exit code $rc, expected 2"
-grep -q 'smoke-test' <<< "$out" || fail "monitor output does not list the stuck execution"
+grep -q 'smoketest0000001' <<< "$out" || fail "monitor output does not list the stuck execution"
 
 step "Backup"
 db_dump="$(./scripts/backup.sh)"
@@ -53,12 +57,12 @@ ls -l "${BACKUP_DIR:-./backups}"
 
 step "Restore round trip"
 docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -c "DELETE FROM execution_entity WHERE \"workflowId\" = 'smoke-test';"
+  -c "DELETE FROM execution_entity WHERE \"workflowId\" = 'smoketest0000001';"
 data_tar="${db_dump/n8n-db-/n8n-data-}"
 data_tar="${data_tar%.dump}.tar.gz"
 ./scripts/restore.sh --yes "$db_dump" "$data_tar"
 restored="$(docker compose exec -T postgres psql -At -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-  -c "SELECT count(*) FROM execution_entity WHERE \"workflowId\" = 'smoke-test';")"
+  -c "SELECT count(*) FROM execution_entity WHERE \"workflowId\" = 'smoketest0000001';")"
 [[ "$restored" == "1" ]] || fail "restored row count is '$restored', expected 1"
 code="$(curl -sk -o /dev/null -w '%{http_code}' --retry 10 --retry-delay 3 --retry-all-errors https://localhost/healthz)"
 [[ "$code" == "200" ]] || fail "n8n unhealthy after restore ($code)"
