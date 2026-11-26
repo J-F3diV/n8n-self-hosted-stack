@@ -10,8 +10,10 @@ step() { printf '\n==> %s\n' "$*"; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 
 [[ -f .env ]] || ./scripts/init-env.sh localhost
+set -a
 # shellcheck disable=SC1091
-set -a; . ./.env; set +a
+. ./.env
+set +a
 [[ "$DOMAIN" == "localhost" ]] || fail "smoke test expects DOMAIN=localhost"
 
 step "Starting stack"
